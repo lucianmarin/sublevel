@@ -193,3 +193,37 @@ SublevelPlayer (CharacterBody3D)
    - Implement the **Prism Rifle** (with working Shock Combo), **Vector Launcher** (with rocket jumping), and **Shard Cannon**.
 4. **M4 — Arena Bot & Multiplayer Slice:**
    - Implement navmesh + jump-link bots capable of using jump pads and tracking airborne targets, plus 60Hz `ENetMultiplayerPeer` state sync.
+
+---
+
+## 9. Native macOS Build (Swift 6 + Metal)
+
+This repository implements the complete **Sublevel** specification natively for macOS using **Swift 6**, **Metal / MetalKit**, and **AVAudioEngine** procedural audio synthesis.
+
+### Build & Run
+```bash
+# Build Sublevel.app bundle + AppIcon.icns
+make app
+
+# Build and launch Sublevel.app
+make run
+
+# Run the movement, weapon combo, breach, and simulation unit test suite
+make test
+```
+
+### Controls
+| Input | Action |
+| :--- | :--- |
+| **Click Window** | Capture mouse cursor for 3D arena look |
+| **W / A / S / D** | Ground movement & airborne strafe-jumping |
+| **Double-Tap W / A / S / D ( or Q / E )** | UT99 Ground Dodge or Airborne Wall-Dodge (up to 2x off walls) |
+| **Space (Hold)** | Jump / Auto-Hop (skips ground friction on landing frame) |
+| **C / Left Ctrl / Shift** | Crouch-Slide (on landing above 11 m/s) or **Sublevel Slam** (2.2x gravity dive in mid-air) |
+| **Left Click** | Primary Fire |
+| **Right Click** | Alt-Fire (Shock Orb, Arcing Grenade, 3-Rocket Charge, Rail Zoom) |
+| **1 – 5 / Scroll** | Switch Weapon (Gauntlet, Prism Rifle, Shard Cannon, Vector Launcher, Sub-Rail) |
+| **R** | Reset Arena & Breaches |
+| **M** | Mute / Unmute Procedural Synth Audio |
+| **ESC** | Release Mouse Capture |
+
