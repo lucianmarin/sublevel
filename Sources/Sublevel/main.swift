@@ -169,6 +169,7 @@ if args.contains("--self-test-metal") {
         fputs("Metal initialization failed\n", stderr)
         exit(1)
     }
+    view.drawableSize = CGSize(width: 640, height: 480)
     view.configure(renderer: renderer)
     for _ in 0..<10 {
         renderer.draw(in: view)

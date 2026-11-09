@@ -58,7 +58,12 @@ public final class SublevelGameView: MTKView {
             NSCursor.hide()
         } else {
             NSCursor.unhide()
+            hudView.showScoreboard = false
+            renderer?.keysHeld.removeAll()
+            renderer?.primaryFireHeld = false
+            renderer?.altFireHeld = false
         }
+        hudView.needsDisplay = true
     }
 
     public override func mouseDown(with event: NSEvent) {
@@ -168,8 +173,12 @@ public final class SublevelGameView: MTKView {
                 renderer.simulation.botsEnabled.toggle()
             case 46: // M = Mute/Unmute Audio
                 renderer.audioEngine.isMuted.toggle()
-            case 4, 48: // H or Tab = Toggle Help Overlay
+            case 4: // H = Toggle Help Overlay
                 hudView.showHelpOverlay.toggle()
+                hudView.needsDisplay = true
+            case 48: // Tab (hold) = Scoreboard
+                hudView.showScoreboard = true
+                hudView.needsDisplay = true
             default:
                 break
             }
@@ -181,6 +190,10 @@ public final class SublevelGameView: MTKView {
     public override func keyUp(with event: NSEvent) {
         let code = event.keyCode
         renderer.keysHeld.remove(code)
+        if code == 48 {
+            hudView.showScoreboard = false
+            hudView.needsDisplay = true
+        }
         if code == 14 { // E Alt-Fire release
             if renderer.altFireHeld {
                 renderer.altFireJustReleased = true
@@ -225,6 +238,28 @@ public final class SublevelHUDOverlayView: NSView {
     public weak var audioEngine: AudioSynthEngine?
     public var isMouseCaptured: Bool = false
     public var showHelpOverlay: Bool = false
+    public var showScoreboard: Bool = false
+
+    // Cache HUD fonts so we do not re-create 30+ NSFont instances per frame at 120 FPS
+    private static let fontDigit24Black = NSFont.monospacedDigitSystemFont(ofSize: 24, weight: .black)
+    private static let fontDigit22Black = NSFont.monospacedDigitSystemFont(ofSize: 22, weight: .black)
+    private static let fontDigit20Black = NSFont.monospacedDigitSystemFont(ofSize: 20, weight: .black)
+    private static let fontDigit16Bold = NSFont.monospacedDigitSystemFont(ofSize: 16, weight: .bold)
+    private static let fontDigit13Black = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .black)
+    private static let fontDigit13Semibold = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
+    private static let fontDigit11Bold = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .bold)
+    private static let fontDigit11Semibold = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
+    private static let fontDigit10Bold = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .bold)
+
+    private static let fontMono16Black = NSFont.monospacedSystemFont(ofSize: 16, weight: .black)
+    private static let fontMono15Black = NSFont.monospacedSystemFont(ofSize: 15, weight: .black)
+    private static let fontMono11_5Semibold = NSFont.monospacedSystemFont(ofSize: 11.5, weight: .semibold)
+    private static let fontMono11Black = NSFont.monospacedSystemFont(ofSize: 11, weight: .black)
+    private static let fontMono11Medium = NSFont.monospacedSystemFont(ofSize: 11, weight: .medium)
+    private static let fontMono10_5Semibold = NSFont.monospacedSystemFont(ofSize: 10.5, weight: .semibold)
+    private static let fontMono10Bold = NSFont.monospacedSystemFont(ofSize: 10, weight: .bold)
+    private static let fontMono9_5Semibold = NSFont.monospacedSystemFont(ofSize: 9.5, weight: .semibold)
+    private static let fontMono9_5Medium = NSFont.monospacedSystemFont(ofSize: 9.5, weight: .medium)
 
     public override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
@@ -232,6 +267,7 @@ public final class SublevelHUDOverlayView: NSView {
         guard let sim = simulation, let ctx = NSGraphicsContext.current?.cgContext else { return }
         let w = bounds.width
         let h = bounds.height
+        guard w > 1, h > 1 else { return }
         let center = CGPoint(x: w * 0.5, y: h * 0.5)
 
         // 1. Damage / Powerup Vignette Flash
@@ -247,7 +283,9 @@ public final class SublevelHUDOverlayView: NSView {
         }
 
         // 2. High-Contrast Weapon Crosshair
-        drawCrosshair(ctx: ctx, center: center, weapon: sim.currentWeapon, charge: sim.rocketChargeCount)
+        if !showScoreboard {
+            drawCrosshair(ctx: ctx, center: center, weapon: sim.currentWeapon, charge: sim.rocketChargeCount)
+        }
 
         // 3. Diegetic Speedometer (u/s) & Momentum Bar (Bottom-Center above Weapon Bar)
         let ups = Int(sim.playerKinematic.speedUPS.rounded())
@@ -261,13 +299,13 @@ public final class SublevelHUDOverlayView: NSView {
         drawText(
             "\(ups) u/s",
             at: CGPoint(x: center.x - 110, y: 106),
-            font: .monospacedDigitSystemFont(ofSize: 22, weight: .black),
+            font: Self.fontDigit22Black,
             color: speedColor
         )
         drawText(
             "PEAK \(peakUps) // \(sim.playerKinematic.isOnFloor ? (sim.playerKinematic.isSliding ? "SLIDE" : "GROUND") : "AIRBORNE")",
             at: CGPoint(x: center.x - 110, y: 89),
-            font: .monospacedSystemFont(ofSize: 10, weight: .bold),
+            font: Self.fontMono10Bold,
             color: NSColor(white: 0.82, alpha: 1.0)
         )
         // Speed gauge bar
@@ -284,13 +322,13 @@ public final class SublevelHUDOverlayView: NSView {
         drawText(
             "HP \(Int(ceil(sim.playerHealth)))",
             at: CGPoint(x: 38, y: 50),
-            font: .monospacedDigitSystemFont(ofSize: 24, weight: .black),
+            font: Self.fontDigit24Black,
             color: hpCol
         )
         drawText(
             "ARMOR \(Int(ceil(sim.playerArmor)))",
             at: CGPoint(x: 152, y: 54),
-            font: .monospacedDigitSystemFont(ofSize: 16, weight: .bold),
+            font: Self.fontDigit16Bold,
             color: NSColor(calibratedRed: 1.0, green: 0.72, blue: 0.0, alpha: 1.0)
         )
         let dodgeReady = sim.playerKinematic.dodgeCooldownTimer <= 0.0
@@ -299,7 +337,7 @@ public final class SublevelHUDOverlayView: NSView {
         drawText(
             dodgeReady,
             at: CGPoint(x: 38, y: 30),
-            font: .monospacedSystemFont(ofSize: 10.5, weight: .semibold),
+            font: Self.fontMono10_5Semibold,
             color: NSColor(white: 0.80, alpha: 1.0)
         )
 
@@ -308,7 +346,7 @@ public final class SublevelHUDOverlayView: NSView {
             drawText(
                 String(format: "QUAD OVERDRIVE 3X [%.1fs]", sim.quadOverdriveTimer),
                 at: CGPoint(x: 28, y: 96),
-                font: .monospacedDigitSystemFont(ofSize: 13, weight: .black),
+                font: Self.fontDigit13Black,
                 color: NSColor(calibratedRed: 1.0, green: 0.72, blue: 0.0, alpha: 1.0)
             )
         }
@@ -316,7 +354,7 @@ public final class SublevelHUDOverlayView: NSView {
             drawText(
                 String(format: "SUB-SHIELD INVULN [%.1fs]", sim.subShieldTimer),
                 at: CGPoint(x: 28, y: 116),
-                font: .monospacedDigitSystemFont(ofSize: 13, weight: .black),
+                font: Self.fontDigit13Black,
                 color: NSColor(calibratedRed: 0.25, green: 0.65, blue: 1.0, alpha: 1.0)
             )
         }
@@ -337,14 +375,14 @@ public final class SublevelHUDOverlayView: NSView {
             drawText(
                 "[\(slot.rawValue)] \(slot.shortName)",
                 at: CGPoint(x: slotX + 10, y: isSelected ? 44 : 36),
-                font: .monospacedSystemFont(ofSize: 11, weight: isSelected ? .black : .medium),
+                font: isSelected ? Self.fontMono11Black : Self.fontMono11Medium,
                 color: isSelected ? nsCol : NSColor(white: 0.85, alpha: 0.85)
             )
             if isSelected {
                 drawText(
                     "LMB / RMB",
                     at: CGPoint(x: slotX + 10, y: 28),
-                    font: .monospacedSystemFont(ofSize: 9.5, weight: .semibold),
+                    font: Self.fontMono9_5Semibold,
                     color: NSColor(white: 0.75, alpha: 1.0)
                 )
             }
@@ -363,20 +401,20 @@ public final class SublevelHUDOverlayView: NSView {
         drawText(
             "STRATUM \(stratum.code)",
             at: CGPoint(x: 38, y: h - 52),
-            font: .monospacedSystemFont(ofSize: 15, weight: .black),
+            font: Self.fontMono15Black,
             color: stratumColor
         )
         let intactBreaches = sim.arena.colliders.filter { $0.kind == .shatterFloor && !$0.isDestroyed }.count
         drawText(
             String(format: "ELEV %.1fm  |  INTACT PLATES: %d/3", sim.playerKinematic.position.y, intactBreaches),
             at: CGPoint(x: 38, y: h - 72),
-            font: .monospacedDigitSystemFont(ofSize: 11, weight: .semibold),
+            font: Self.fontDigit11Semibold,
             color: NSColor(white: 0.85, alpha: 1.0)
         )
         drawText(
-            "REVERB WET: \(Int(stratum.reverbWetMix))%  |  [H] HELP  [ESC] CURSOR",
+            "REVERB WET: \(Int(stratum.reverbWetMix))%  |  [TAB] SCORES  [H] HELP",
             at: CGPoint(x: 38, y: h - 88),
-            font: .monospacedSystemFont(ofSize: 9.5, weight: .medium),
+            font: Self.fontMono9_5Medium,
             color: NSColor(white: 0.68, alpha: 1.0)
         )
 
@@ -386,13 +424,13 @@ public final class SublevelHUDOverlayView: NSView {
         drawText(
             String(format: "FLOW %.2fX", sim.flowMultiplier),
             at: CGPoint(x: w - 270, y: h - 52),
-            font: .monospacedDigitSystemFont(ofSize: 20, weight: .black),
+            font: Self.fontDigit20Black,
             color: flowCol
         )
         drawText(
             "FRAGS \(sim.playerFrags)/\(sim.fragLimit)  |  COMBOS \(sim.totalShockCombos)  |  MULTI-LVL \(sim.totalMultiStratumKills)",
             at: CGPoint(x: w - 270, y: h - 76),
-            font: .monospacedDigitSystemFont(ofSize: 10, weight: .bold),
+            font: Self.fontDigit10Bold,
             color: .white
         )
 
@@ -410,14 +448,16 @@ public final class SublevelHUDOverlayView: NSView {
             drawText(
                 "\(item.title) — \(item.subtitle)",
                 at: CGPoint(x: w - 312, y: y + 9),
-                font: .monospacedSystemFont(ofSize: 10, weight: .bold),
+                font: Self.fontMono10Bold,
                 color: c
             )
         }
 
-        // 8. Click-to-Capture or Help Banner
+        // 8. Click-to-Capture or Help Banner, otherwise the Tab scoreboard
         if !isMouseCaptured || showHelpOverlay {
             drawHelpModal(ctx: ctx, center: center)
+        } else if showScoreboard {
+            drawScoreboard(ctx: ctx, center: center, sim: sim)
         }
     }
 
@@ -465,16 +505,75 @@ public final class SublevelHUDOverlayView: NSView {
             ("HOLD CTRL / C      Airborne Sublevel Slam (2.2x grav) / Ground Crouch-Slide", false),
             ("LMB / RMB (or E)   Primary Fire / Alt-Fire (Weapon Combos)", false),
             ("KEYS 1 - 5 / Q     1:Gauntlet  2:Prism(Shock Combo)  3:Shard  4:Vector  5:Sub-Rail", false),
-            ("R / B / M / ESC    R:Reset Match  B:Toggle Bots  M:Mute  ESC:Release Cursor", false)
+            ("R / B / M / ESC    R:Reset Match  B:Toggle Bots  M:Mute  ESC:Release Cursor", false),
+            ("HOLD TAB / H       Scoreboard / Toggle this Help Overlay", false)
         ]
 
-        for (i, entry) in lines.enumerated() {
+        for (i, entry) in lines.enumerated() where !entry.0.isEmpty {
             let y = box.maxY - 38 - CGFloat(i) * 27
             drawText(
                 entry.0,
                 at: CGPoint(x: box.minX + 24, y: y),
-                font: .monospacedSystemFont(ofSize: entry.1 ? 15 : 11.5, weight: entry.1 ? .black : .semibold),
+                font: entry.1 ? Self.fontMono15Black : Self.fontMono11_5Semibold,
                 color: entry.1 ? NSColor(calibratedRed: 0.0, green: 0.94, blue: 1.0, alpha: 1.0) : .white
+            )
+        }
+    }
+
+    private func drawScoreboard(ctx: CGContext, center: CGPoint, sim: SublevelSimulation) {
+        struct Row { let name: String; let frags: Int; let deaths: Int; let color: SIMD3<Float>; let isPlayer: Bool; let isAlive: Bool }
+        var rows = [Row(name: "YOU", frags: sim.playerFrags, deaths: sim.playerDeaths, color: SIMD3<Float>(1, 1, 1), isPlayer: true, isAlive: sim.playerHealth > 0)]
+        if sim.botsEnabled {
+            rows += sim.bots.map { Row(name: $0.name, frags: $0.frags, deaths: $0.deaths, color: $0.teamColor, isPlayer: false, isAlive: $0.isAlive) }
+        }
+        rows.sort { ($0.frags, -$0.deaths) > ($1.frags, -$1.deaths) }
+
+        let rowH: CGFloat = 30
+        let boxH = 104 + CGFloat(rows.count) * rowH
+        let box = CGRect(x: center.x - 260, y: center.y - boxH * 0.5, width: 520, height: boxH)
+        let amber = NSColor(calibratedRed: 1.0, green: 0.72, blue: 0.0, alpha: 1.0)
+        drawPanel(ctx: ctx, rect: box, accent: amber)
+
+        let minutes = Int(sim.elapsedMatchTime) / 60
+        let seconds = Int(sim.elapsedMatchTime) % 60
+        drawText("SCOREBOARD", at: CGPoint(x: box.minX + 24, y: box.maxY - 36), font: Self.fontMono16Black, color: amber)
+        drawText(
+            String(format: "FRAG LIMIT %d  |  %02d:%02d", sim.fragLimit, minutes, seconds),
+            at: CGPoint(x: box.maxX - 210, y: box.maxY - 33),
+            font: Self.fontDigit11Bold,
+            color: NSColor(white: 0.8, alpha: 1.0)
+        )
+
+        let headerY = box.maxY - 66
+        let headerFont = Self.fontMono10Bold
+        let headerColor = NSColor(white: 0.6, alpha: 1.0)
+        drawText("#", at: CGPoint(x: box.minX + 24, y: headerY), font: headerFont, color: headerColor)
+        drawText("PILOT", at: CGPoint(x: box.minX + 56, y: headerY), font: headerFont, color: headerColor)
+        drawText("FRAGS", at: CGPoint(x: box.minX + 300, y: headerY), font: headerFont, color: headerColor)
+        drawText("DEATHS", at: CGPoint(x: box.minX + 370, y: headerY), font: headerFont, color: headerColor)
+        drawText("K/D", at: CGPoint(x: box.minX + 450, y: headerY), font: headerFont, color: headerColor)
+        ctx.setFillColor(NSColor(white: 1.0, alpha: 0.18).cgColor)
+        ctx.fill(CGRect(x: box.minX + 20, y: headerY - 8, width: box.width - 40, height: 1))
+
+        for (i, row) in rows.enumerated() {
+            let y = headerY - 34 - CGFloat(i) * rowH
+            if row.isPlayer {
+                ctx.setFillColor(NSColor(white: 1.0, alpha: 0.10).cgColor)
+                ctx.fill(CGRect(x: box.minX + 20, y: y - 8, width: box.width - 40, height: rowH - 2))
+            }
+            let c = NSColor(calibratedRed: CGFloat(row.color.x), green: CGFloat(row.color.y), blue: CGFloat(row.color.z), alpha: row.isAlive ? 1.0 : 0.45)
+            let font = row.isPlayer ? Self.fontDigit13Black : Self.fontDigit13Semibold
+            ctx.setFillColor(c.cgColor)
+            ctx.fill(CGRect(x: box.minX + 42, y: y - 2, width: 4, height: 16))
+            drawText("\(i + 1)", at: CGPoint(x: box.minX + 24, y: y), font: font, color: .white)
+            drawText(row.isAlive ? row.name : "\(row.name)  [DOWN]", at: CGPoint(x: box.minX + 56, y: y), font: font, color: c)
+            drawText("\(row.frags)", at: CGPoint(x: box.minX + 300, y: y), font: font, color: .white)
+            drawText("\(row.deaths)", at: CGPoint(x: box.minX + 370, y: y), font: font, color: .white)
+            drawText(
+                String(format: "%.2f", Float(row.frags) / Float(max(row.deaths, 1))),
+                at: CGPoint(x: box.minX + 450, y: y),
+                font: font,
+                color: NSColor(white: 0.85, alpha: 1.0)
             )
         }
     }
@@ -486,7 +585,9 @@ public final class SublevelHUDOverlayView: NSView {
         ctx.fill(CGRect(x: rect.minX, y: rect.minY, width: 4, height: rect.height))
     }
 
+    @inline(never)
     private func drawText(_ text: String, at point: CGPoint, font: NSFont, color: NSColor) {
+        guard !text.isEmpty else { return }
         let attrs: [NSAttributedString.Key: Any] = [
             .font: font,
             .foregroundColor: color

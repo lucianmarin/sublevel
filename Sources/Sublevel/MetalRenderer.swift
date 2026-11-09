@@ -53,6 +53,8 @@ public final class MetalArenaRenderer: NSObject, MTKViewDelegate {
     private var cubeVertexCount: Int = 0
     private var sphereVertexBuffer: MTLBuffer!
     private var sphereVertexCount: Int = 0
+    private var cylinderVertexBuffer: MTLBuffer!
+    private var cylinderVertexCount: Int = 0
 
     public let simulation: SublevelSimulation
     public let audioEngine: AudioSynthEngine
@@ -105,6 +107,14 @@ public final class MetalArenaRenderer: NSObject, MTKViewDelegate {
         sphereVertexBuffer = device.makeBuffer(
             bytes: sphereVerts,
             length: MemoryLayout<GPUVertex>.stride * sphereVerts.count,
+            options: .storageModeShared
+        )
+
+        let cylinderVerts = Self.makeUnitCylinderVertices(segments: 20)
+        cylinderVertexCount = cylinderVerts.count
+        cylinderVertexBuffer = device.makeBuffer(
+            bytes: cylinderVerts,
+            length: MemoryLayout<GPUVertex>.stride * cylinderVerts.count,
             options: .storageModeShared
         )
     }
@@ -295,36 +305,28 @@ public final class MetalArenaRenderer: NSObject, MTKViewDelegate {
             ))
         }
 
-        // D. Enemy Bots (`player_silhouette` shader mode = 1.0 with Fresnel rim + high-contrast team color)
+        // D. Enemy Bots: articulated robots (team-color silhouette armor + lit hardware + glowing visor) holding their weapon
+        var models = ModelBatch()
         for bot in simulation.bots where bot.isAlive {
-            let base = bot.kinematic.position
-            let col = bot.hitFlashTimer > 0 ? SIMD3<Float>(1, 1, 1) : bot.teamColor
-            let rot = Math3D.rotationY(bot.yaw)
-
-            // Torso
-            let torsoPos = base + SIMD3<Float>(0, 0.95, 0)
-            let torsoSize = SIMD3<Float>(0.72, 1.05, 0.44)
-            opaqueCubes.append(GPUInstanceData(
-                modelMatrix: Math3D.translation(torsoPos) * rot * Math3D.scale(torsoSize),
-                boxCenterAndKind: SIMD4<Float>(torsoPos.x, torsoPos.y, torsoPos.z, 1.0),
-                boxHalfExtents: SIMD4<Float>(torsoSize.x * 0.5, torsoSize.y * 0.5, torsoSize.z * 0.5, 0.0),
-                colorAndRoughness: SIMD4<Float>(col.x, col.y, col.z, 0.2),
-                materialParams: SIMD4<Float>(0.1, 0.85, 1.0, 0.0)
-            ))
-            // Head
-            let headPos = base + SIMD3<Float>(0, 1.68, 0)
-            let headSize = SIMD3<Float>(0.42, 0.42, 0.42)
-            opaqueCubes.append(GPUInstanceData(
-                modelMatrix: Math3D.translation(headPos) * rot * Math3D.scale(headSize),
-                boxCenterAndKind: SIMD4<Float>(headPos.x, headPos.y, headPos.z, 1.0),
-                boxHalfExtents: SIMD4<Float>(0.21, 0.21, 0.21, 0.0),
-                colorAndRoughness: SIMD4<Float>(col.x, col.y, col.z, 0.15),
-                materialParams: SIMD4<Float>(0.2, 1.1, 1.0, 0.0)
-            ))
+            CharacterModels.appendRobot(bot, time: simulation.elapsedMatchTime, into: &models)
         }
 
         // E. Active Projectiles & Beams
         for proj in simulation.projectiles {
+            if proj.kind == .vectorRocket {
+                CharacterModels.appendRocket(position: proj.position, velocity: proj.velocity, color: proj.color, time: simulation.elapsedMatchTime, into: &models)
+                let vLen = simd_length(proj.velocity)
+                let vDir = vLen > 1e-4 ? (proj.velocity / vLen) : SIMD3<Float>(0, 0, -1)
+                let exhaust = proj.position - vDir * 0.38
+                sphereInstances.append(GPUInstanceData(
+                    modelMatrix: Math3D.translation(exhaust) * Math3D.scale(SIMD3<Float>(repeating: 0.3)),
+                    boxCenterAndKind: SIMD4<Float>(exhaust.x, exhaust.y, exhaust.z, 2.0),
+                    boxHalfExtents: SIMD4<Float>(0.15, 0.15, 0.15, 0.25),
+                    colorAndRoughness: SIMD4<Float>(proj.color.x, proj.color.y, proj.color.z, 0.05),
+                    materialParams: SIMD4<Float>(0.0, 1.6, 0.85, 0.0)
+                ))
+                continue
+            }
             let radius: Float = (proj.kind == .shockOrb) ? 0.58 : (proj.kind == .vectorRocket ? 0.26 : 0.16)
             let scaleVec = SIMD3<Float>(repeating: radius * 2.0)
             sphereInstances.append(GPUInstanceData(
@@ -383,6 +385,7 @@ public final class MetalArenaRenderer: NSObject, MTKViewDelegate {
         encoder.setFragmentBytes(&sceneUniforms, length: MemoryLayout<GPUSceneUniforms>.stride, index: 1)
 
         drawInstanced(encoder: encoder, vertexBuffer: cubeVertexBuffer, vertexCount: cubeVertexCount, instances: opaqueCubes)
+        drawModelBatch(encoder: encoder, batch: models)
 
         // Encode Translucent Pass (Skylights, Beams, Shock Spheres)
         encoder.setRenderPipelineState(translucentPipeline)
@@ -391,72 +394,68 @@ public final class MetalArenaRenderer: NSObject, MTKViewDelegate {
         drawInstanced(encoder: encoder, vertexBuffer: sphereVertexBuffer, vertexCount: sphereVertexCount, instances: sphereInstances)
 
         // G. First-Person Viewmodel Pass (FOV 75°, rendered in view space with near depth range so weapon never clips walls)
-        encodeViewmodelPass(encoder: encoder, aspect: aspect, baseSceneUniforms: sceneUniforms)
+        encodeViewmodelPass(encoder: encoder, aspect: aspect, viewMatrix: viewMat, baseSceneUniforms: sceneUniforms)
     }
 
     private func encodeViewmodelPass(
         encoder: MTLRenderCommandEncoder,
         aspect: Float,
+        viewMatrix: simd_float4x4,
         baseSceneUniforms: GPUSceneUniforms
     ) {
         guard !simulation.isSubRailZoomed else { return }
 
         var vmUniforms = baseSceneUniforms
         // Viewmodel Camera uses 75° FOV per README Section 7
-        vmUniforms.viewProjMatrix = Math3D.perspective(fovYRadians: 75.0 * (.pi / 180.0), aspect: aspect, nearZ: 0.02, farZ: 10.0)
+        // Compress viewmodel depth into [0, 0.04] so it always sits in front of the world yet still self-occludes
+        var vmProj = Math3D.perspective(fovYRadians: 75.0 * (.pi / 180.0), aspect: aspect, nearZ: 0.02, farZ: 10.0)
+        vmProj.columns.0.z *= 0.04
+        vmProj.columns.1.z *= 0.04
+        vmProj.columns.2.z *= 0.04
+        vmProj.columns.3.z *= 0.04
+        vmUniforms.viewProjMatrix = vmProj
         vmUniforms.cameraPosition = SIMD4<Float>(0, 0, 0, 1)
+        // Viewmodel lives in view space: rotate the sun into view space and skip world-space point lights
+        let sunView = viewMatrix * SIMD4<Float>(baseSceneUniforms.sunDirection.x, baseSceneUniforms.sunDirection.y, baseSceneUniforms.sunDirection.z, 0)
+        let sunVec = SIMD3<Float>(sunView.x, sunView.y, sunView.z)
+        let sunDir = simd_length_squared(sunVec) > 1e-8 ? simd_normalize(sunVec) : SIMD3<Float>(0, 1, 0)
+        vmUniforms.sunDirection = SIMD4<Float>(sunDir, 0)
+        vmUniforms.timeAndLightCount.y = 0
 
         let bobX = cos(simulation.cameraFX.bobPhase) * 0.014
         let bobY = abs(sin(simulation.cameraFX.bobPhase)) * -0.016
         let kickZ = simulation.weaponSwingOffset * 0.085
         let kickPitch = simulation.weaponSwingOffset * 0.16
-        let accent = simulation.currentWeapon.accentColor
+        let weapon = simulation.currentWeapon
 
-        let mountPos = SIMD3<Float>(0.26 + bobX, -0.24 + bobY, -0.48 + kickZ)
-        let mountRot = Math3D.rotationX(kickPitch) * Math3D.rotationZ(simulation.cameraFX.rollAngleRadians * 0.5)
+        let mountPos = SIMD3<Float>(0.2 + bobX, -0.2 + bobY, -0.4 + kickZ)
+        let mountRot = Math3D.rotationY(0.05) * Math3D.rotationX(kickPitch) * Math3D.rotationZ(simulation.cameraFX.rollAngleRadians * 0.5)
+        // Shoulder-fired launcher sits further forward so its wide tube doesn't fill the screen
+        let weaponOffset = weapon == .vectorLauncher ? SIMD3<Float>(0.02, -0.03, -0.14) : .zero
+        let root = Math3D.translation(mountPos + weaponOffset) * mountRot * Math3D.scale(SIMD3<Float>(repeating: 0.5))
 
-        // Receiver body (Stark White brutalist chassis)
-        let bodyModel = Math3D.translation(mountPos) * mountRot * Math3D.scale(SIMD3<Float>(0.11, 0.13, 0.44))
-        // Glowing weapon core / barrel rails
-        let railModel = Math3D.translation(mountPos + SIMD3<Float>(0, 0.045, -0.08)) * mountRot * Math3D.scale(SIMD3<Float>(0.125, 0.045, 0.48))
-
-        var vmInstances: [GPUInstanceData] = [
-            GPUInstanceData(
-                modelMatrix: bodyModel,
-                boxCenterAndKind: SIMD4<Float>(mountPos.x, mountPos.y, mountPos.z, 0.0),
-                boxHalfExtents: SIMD4<Float>(0.055, 0.065, 0.22, 0.0),
-                colorAndRoughness: SIMD4<Float>(0.92, 0.93, 0.95, 0.25),
-                materialParams: SIMD4<Float>(0.2, 0.1, 1.0, 0.0)
-            ),
-            GPUInstanceData(
-                modelMatrix: railModel,
-                boxCenterAndKind: SIMD4<Float>(mountPos.x, mountPos.y, mountPos.z, 3.0),
-                boxHalfExtents: SIMD4<Float>(0.062, 0.022, 0.24, 1.0),
-                colorAndRoughness: SIMD4<Float>(accent.x, accent.y, accent.z, 0.10),
-                materialParams: SIMD4<Float>(0.4, 1.35 + simulation.weaponSwingOffset * 0.8, 1.0, 0.0)
-            )
-        ]
-
-        // Vector Launcher multi-rocket charge pips on top of weapon
-        if simulation.currentWeapon == .vectorLauncher && simulation.rocketChargeCount > 0 {
-            for c in 0..<simulation.rocketChargeCount {
-                let pipPos = mountPos + SIMD3<Float>(-0.04 + Float(c) * 0.04, 0.09, -0.05)
-                let pipModel = Math3D.translation(pipPos) * Math3D.scale(SIMD3<Float>(0.028, 0.028, 0.06))
-                vmInstances.append(GPUInstanceData(
-                    modelMatrix: pipModel,
-                    boxCenterAndKind: SIMD4<Float>(pipPos.x, pipPos.y, pipPos.z, 3.0),
-                    boxHalfExtents: SIMD4<Float>(0.014, 0.014, 0.03, 1.0),
-                    colorAndRoughness: SIMD4<Float>(1.0, 0.8, 0.1, 0.05),
-                    materialParams: SIMD4<Float>(0.0, 1.9, 1.0, 0.0)
-                ))
-            }
-        }
+        var batch = ModelBatch()
+        CharacterModels.appendWeapon(
+            weapon,
+            root: root,
+            into: &batch,
+            time: simulation.elapsedMatchTime,
+            fireKick: simulation.weaponSwingOffset,
+            rocketCharges: simulation.rocketChargeCount,
+            glowBoost: simulation.weaponSwingOffset * 0.8
+        )
 
         encoder.setRenderPipelineState(opaquePipeline)
-        encoder.setDepthStencilState(depthStencilTranslucent)
+        encoder.setDepthStencilState(depthStencilOpaque)
         encoder.setVertexBytes(&vmUniforms, length: MemoryLayout<GPUSceneUniforms>.stride, index: 1)
         encoder.setFragmentBytes(&vmUniforms, length: MemoryLayout<GPUSceneUniforms>.stride, index: 1)
-        drawInstanced(encoder: encoder, vertexBuffer: cubeVertexBuffer, vertexCount: cubeVertexCount, instances: vmInstances)
+        drawModelBatch(encoder: encoder, batch: batch)
+    }
+
+    private func drawModelBatch(encoder: MTLRenderCommandEncoder, batch: ModelBatch) {
+        drawInstanced(encoder: encoder, vertexBuffer: cubeVertexBuffer, vertexCount: cubeVertexCount, instances: batch.cubes)
+        drawInstanced(encoder: encoder, vertexBuffer: cylinderVertexBuffer, vertexCount: cylinderVertexCount, instances: batch.cylinders)
+        drawInstanced(encoder: encoder, vertexBuffer: sphereVertexBuffer, vertexCount: sphereVertexCount, instances: batch.spheres)
     }
 
     private func drawInstanced(
@@ -468,7 +467,8 @@ public final class MetalArenaRenderer: NSObject, MTKViewDelegate {
         guard !instances.isEmpty else { return }
         encoder.setVertexBuffer(vertexBuffer, offset: 0, index: 0)
 
-        let chunkSize = 64
+        // Metal enforces a 4096-byte maximum for setVertexBytes; GPUInstanceData is 128 bytes (max 32 per draw).
+        let chunkSize = max(1, 4096 / MemoryLayout<GPUInstanceData>.stride)
         var offset = 0
         while offset < instances.count {
             let end = min(offset + chunkSize, instances.count)
@@ -577,6 +577,36 @@ public final class MetalArenaRenderer: NSObject, MTKViewDelegate {
                 verts.append(GPUVertex(position: p3 * 0.5, normal: p3, uvAndEdge: SIMD3<Float>(1, 1, 0)))
                 verts.append(GPUVertex(position: p4 * 0.5, normal: p4, uvAndEdge: SIMD3<Float>(1, 0, 0)))
             }
+        }
+        return verts
+    }
+
+    /// Unit cylinder (radius 0.5, length 1) aligned to the Z axis, with flat caps.
+    private static func makeUnitCylinderVertices(segments: Int) -> [GPUVertex] {
+        var verts: [GPUVertex] = []
+        let front = SIMD3<Float>(0, 0, 1)
+        for j in 0..<segments {
+            let a1 = Float(j) * 2.0 * .pi / Float(segments)
+            let a2 = Float(j + 1) * 2.0 * .pi / Float(segments)
+            let n1 = SIMD3<Float>(cos(a1), sin(a1), 0)
+            let n2 = SIMD3<Float>(cos(a2), sin(a2), 0)
+            let b1 = n1 * 0.5 - front * 0.5, b2 = n2 * 0.5 - front * 0.5
+            let t1 = n1 * 0.5 + front * 0.5, t2 = n2 * 0.5 + front * 0.5
+            let uv = SIMD3<Float>(0, 0, 0)
+            verts += [
+                GPUVertex(position: b1, normal: n1, uvAndEdge: uv),
+                GPUVertex(position: b2, normal: n2, uvAndEdge: uv),
+                GPUVertex(position: t2, normal: n2, uvAndEdge: uv),
+                GPUVertex(position: b1, normal: n1, uvAndEdge: uv),
+                GPUVertex(position: t2, normal: n2, uvAndEdge: uv),
+                GPUVertex(position: t1, normal: n1, uvAndEdge: uv),
+                GPUVertex(position: front * 0.5, normal: front, uvAndEdge: uv),
+                GPUVertex(position: t1, normal: front, uvAndEdge: uv),
+                GPUVertex(position: t2, normal: front, uvAndEdge: uv),
+                GPUVertex(position: -front * 0.5, normal: -front, uvAndEdge: uv),
+                GPUVertex(position: b2, normal: -front, uvAndEdge: uv),
+                GPUVertex(position: b1, normal: -front, uvAndEdge: uv)
+            ]
         }
         return verts
     }
@@ -718,6 +748,33 @@ public final class MetalArenaRenderer: NSObject, MTKViewDelegate {
             float3 col = baseColor * (rim * 2.4 + core + wave * 0.4) * emissive + float3(rim * 0.65);
             float finalAlpha = clamp(alpha * (rim * 1.15 + 0.28), 0.08, 0.96);
             return float4(tonemapAgX(col), finalAlpha);
+        }
+
+        // MODE 4: Robot / weapon hardware (lit metal & painted shells, no architectural grid)
+        if (in.shaderMode > 3.5) {
+            float metallic = in.materialParams.x;
+            float3 L = normalize(scene.sunDirection.xyz);
+            float ndl = saturate(dot(N, L));
+            float3 ambient = mix(float3(0.30, 0.33, 0.40), float3(0.86, 0.88, 0.93), N.y * 0.5 + 0.5);
+            float3 H = normalize(L + V + float3(0.0, 0.0001, 0.0));
+            float specPow = mix(110.0, 12.0, roughness);
+            float3 specCol = mix(float3(0.06), baseColor + 0.25, metallic);
+            float3 spec = specCol * pow(saturate(dot(N, H)), specPow) * (1.4 - roughness);
+            float3 gi = float3(0.0);
+            int lightCount = int(scene.timeAndLightCount.y);
+            for (int i = 0; i < lightCount; ++i) {
+                float3 toL = scene.lights[i].positionAndRadius.xyz - in.worldPos;
+                float lRad = max(scene.lights[i].positionAndRadius.w, 0.5);
+                float dist = length(toL);
+                if (dist < lRad) {
+                    float atten = pow(1.0 - dist / lRad, 1.75) * scene.lights[i].colorAndIntensity.w;
+                    gi += scene.lights[i].colorAndIntensity.rgb * saturate((dot(N, toL / max(dist, 0.001)) + 0.3) / 1.3) * atten * 0.45;
+                }
+            }
+            float fresnel = pow(1.0 - saturate(dot(N, V)), 3.0);
+            float3 lit = baseColor * (ambient * 0.62 + float3(1.0, 0.98, 0.95) * ndl * 0.85 + gi)
+                       + spec + baseColor * emissive + float3(fresnel * 0.22);
+            return float4(tonemapAgX(lit), alpha);
         }
 
         // MODE 3: Pure emissive energy (Beams, Pickups, Teleporters)

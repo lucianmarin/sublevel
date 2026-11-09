@@ -225,5 +225,7 @@ make test
 | **1 – 5 / Scroll** | Switch Weapon (Gauntlet, Prism Rifle, Shard Cannon, Vector Launcher, Sub-Rail) |
 | **R** | Reset Arena & Breaches |
 | **M** | Mute / Unmute Procedural Synth Audio |
+| **Tab (Hold)** | Show Scoreboard (frags, deaths, K/D) |
+| **H** | Toggle Help Overlay |
 | **ESC** | Release Mouse Capture |
 
