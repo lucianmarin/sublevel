@@ -27,6 +27,7 @@ public final class SublevelGameView: MTKView {
         hudView.autoresizingMask = [.width, .height]
         hudView.simulation = renderer.simulation
         hudView.audioEngine = renderer.audioEngine
+        hudView.renderer = renderer
         addSubview(hudView)
 
         renderer.onFrameUpdated = { [weak self] in
@@ -236,6 +237,7 @@ public final class SublevelGameView: MTKView {
 public final class SublevelHUDOverlayView: NSView {
     public weak var simulation: SublevelSimulation?
     public weak var audioEngine: AudioSynthEngine?
+    public weak var renderer: MetalArenaRenderer?
     public var isMouseCaptured: Bool = false
     public var showHelpOverlay: Bool = false
     public var showScoreboard: Bool = false
@@ -397,19 +399,21 @@ public final class SublevelHUDOverlayView: NSView {
             case .b3Sump:      return NSColor(calibratedRed: 0.15, green: 0.55, blue: 1.0, alpha: 1.0)
             }
         }()
-        drawPanel(ctx: ctx, rect: CGRect(x: 24, y: h - 94, width: 285, height: 70), accent: stratumColor)
+        drawPanel(ctx: ctx, rect: CGRect(x: 24, y: h - 94, width: 315, height: 70), accent: stratumColor)
         drawText(
             "STRATUM \(stratum.code)",
             at: CGPoint(x: 38, y: h - 52),
             font: Self.fontMono15Black,
             color: stratumColor
         )
+        let totalBreaches = sim.arena.colliders.filter { $0.kind == .shatterFloor }.count
         let intactBreaches = sim.arena.colliders.filter { $0.kind == .shatterFloor && !$0.isDestroyed }.count
+        let polyK = max(1, (renderer?.lastFrameTriangleCount ?? 0) / 1000)
         drawText(
-            String(format: "ELEV %.1fm  |  INTACT PLATES: %d/3", sim.playerKinematic.position.y, intactBreaches),
+            String(format: "ELEV %.1fm  |  PLATES %d/%d  |  %dK POLYS", sim.playerKinematic.position.y, intactBreaches, totalBreaches, polyK),
             at: CGPoint(x: 38, y: h - 72),
             font: Self.fontDigit11Semibold,
-            color: NSColor(white: 0.85, alpha: 1.0)
+            color: NSColor(white: 0.88, alpha: 1.0)
         )
         drawText(
             "REVERB WET: \(Int(stratum.reverbWetMix))%  |  [TAB] SCORES  [H] HELP",
@@ -444,10 +448,10 @@ public final class SublevelHUDOverlayView: NSView {
                 blue: CGFloat(item.color.z),
                 alpha: alpha
             )
-            drawPanel(ctx: ctx, rect: CGRect(x: w - 324, y: y, width: 300, height: 32), accent: c)
+            drawPanel(ctx: ctx, rect: CGRect(x: w - 390, y: y, width: 366, height: 32), accent: c)
             drawText(
                 "\(item.title) — \(item.subtitle)",
-                at: CGPoint(x: w - 312, y: y + 9),
+                at: CGPoint(x: w - 378, y: y + 9),
                 font: Self.fontMono10Bold,
                 color: c
             )

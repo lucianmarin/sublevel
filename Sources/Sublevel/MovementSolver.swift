@@ -47,13 +47,16 @@ public struct WorldBoxCollider: Sendable {
     public var id: Int
     public var minBounds: SIMD3<Float>
     public var maxBounds: SIMD3<Float>
+    public var velocity: SIMD3<Float>
     public var color: SIMD3<Float>
     public var kind: ColliderSurfaceKind
     public var isDestroyed: Bool
     public var health: Float
+    public var maxHealth: Float
     public var metallic: Float
     public var roughness: Float
     public var emissiveStrength: Float
+    public var isDynamic: Bool
 
     public init(
         id: Int,
@@ -64,19 +67,31 @@ public struct WorldBoxCollider: Sendable {
         health: Float = 100.0,
         roughness: Float = 0.35,
         metallic: Float = 0.05,
-        emissiveStrength: Float = 0.0
+        emissiveStrength: Float = 0.0,
+        isDynamic: Bool = false
     ) {
         self.id = id
         let half = size * 0.5
         self.minBounds = center - half
         self.maxBounds = center + half
+        self.velocity = .zero
         self.color = color
         self.kind = kind
         self.isDestroyed = false
         self.health = health
-        self.roughness = roughness
+        self.maxHealth = max(health, 1.0)
         self.metallic = metallic
+        self.roughness = roughness
         self.emissiveStrength = emissiveStrength
+        self.isDynamic = isDynamic
+    }
+
+    public mutating func moveCenter(to newCenter: SIMD3<Float>, dt: Float) {
+        let oldCenter = center
+        let half = size * 0.5
+        minBounds = newCenter - half
+        maxBounds = newCenter + half
+        velocity = dt > 1e-5 ? (newCenter - oldCenter) / dt : .zero
     }
 
     public var center: SIMD3<Float> {
@@ -145,6 +160,7 @@ public struct KinematicState: Sendable {
     public var velocity: SIMD3<Float>
     public var isOnFloor: Bool
     public var floorNormal: SIMD3<Float>
+    public var floorVelocity: SIMD3<Float>
     public var jumpBufferTimer: Float
     public var dodgeCooldownTimer: Float
     public var wallDodgesUsed: Int
@@ -161,6 +177,7 @@ public struct KinematicState: Sendable {
         self.velocity = .zero
         self.isOnFloor = true
         self.floorNormal = SIMD3<Float>(0, 1, 0)
+        self.floorVelocity = .zero
         self.jumpBufferTimer = 0.0
         self.dodgeCooldownTimer = 0.0
         self.wallDodgesUsed = 0
@@ -339,12 +356,16 @@ public enum MovementSolver {
             if input.jumpHeld || state.jumpBufferTimer > 0.0 {
                 // Trimping: if jumping on an upward ramp with horizontal velocity moving up the slope,
                 // add ramp-deflected vertical velocity on top of jump impulse!
+                let liftBoost = max(0.0, state.floorVelocity.y * 0.55)
                 if state.floorNormal.y < 0.99 {
                     let slopeBoost = max(0.0, -simd_dot(SIMD3<Float>(state.velocity.x, 0, state.velocity.z), SIMD3<Float>(state.floorNormal.x, 0, state.floorNormal.z))) * 0.45
-                    state.velocity.y = config.jumpImpulse + slopeBoost
+                    state.velocity.y = config.jumpImpulse + slopeBoost + liftBoost
                 } else {
-                    state.velocity.y = config.jumpImpulse
+                    state.velocity.y = config.jumpImpulse + liftBoost
                 }
+                state.velocity.x += state.floorVelocity.x * 0.5
+                state.velocity.z += state.floorVelocity.z * 0.5
+                state.floorVelocity = .zero
                 state.isOnFloor = false
                 state.jumpBufferTimer = 0.0
                 skippedFrictionForJump = true
@@ -452,7 +473,8 @@ public enum MovementSolver {
     ) {
         let prevVelY = state.velocity.y
         let wasOnFloor = state.isOnFloor
-        var nextPos = state.position + state.velocity * delta
+        let platformCarry = wasOnFloor ? SIMD3<Float>(state.floorVelocity.x * delta, 0, state.floorVelocity.z * delta) : .zero
+        var nextPos = state.position + state.velocity * delta + platformCarry
         let r = config.hullRadius
         let h = config.hullHeight
 
@@ -510,6 +532,7 @@ public enum MovementSolver {
         var grounded = false
         var bestFloorY: Float = -10000.0
         var bestFloorNormal = SIMD3<Float>(0, 1, 0)
+        var bestFloorVel = SIMD3<Float>.zero
 
         for box in colliders where !box.isDestroyed {
             let expandedMinX = box.minBounds.x - r * 0.75
@@ -525,12 +548,14 @@ public enum MovementSolver {
             let topY = box.surfaceHeight(atX: nextPos.x, z: nextPos.z)
             let isRamp = (box.kind == .rampPosX || box.kind == .rampNegX || box.kind == .rampPosZ || box.kind == .rampNegZ)
 
-            // Check landing / riding floor or ramp
-            let snapTolerance: Float = (wasOnFloor || isRamp) ? config.maxStepHeight : 0.20
-            if state.position.y >= topY - snapTolerance && nextPos.y <= topY + 0.08 && state.velocity.y <= 3.5 {
+            // Check landing / riding floor, ramp, or rising dynamic lift
+            let liftUpAllowance = max(0.0, box.velocity.y * delta) + (box.isDynamic ? 0.25 : 0.0)
+            let snapTolerance: Float = ((wasOnFloor || isRamp) ? config.maxStepHeight : 0.20) + liftUpAllowance
+            if state.position.y >= topY - snapTolerance && nextPos.y <= topY + 0.08 + liftUpAllowance && state.velocity.y <= 3.5 + max(0.0, box.velocity.y) {
                 if topY > bestFloorY {
                     bestFloorY = topY
                     bestFloorNormal = box.rampNormal
+                    bestFloorVel = box.velocity
                     grounded = true
                 }
             } else if !isRamp && state.velocity.y > 0 && (state.position.y + h) <= box.minBounds.y + 0.15 && (nextPos.y + h) > box.minBounds.y {
@@ -550,6 +575,7 @@ public enum MovementSolver {
                     // Launch off ramp ("trimping")
                     state.velocity.y = intoSlope * (1.0 - bestFloorNormal.y * 0.35) + config.jumpImpulse * 0.55
                     state.isOnFloor = false
+                    state.floorVelocity = .zero
                     state.position = nextPos
                     return
                 }
@@ -573,9 +599,11 @@ public enum MovementSolver {
             state.velocity.y = 0
             state.isOnFloor = true
             state.floorNormal = bestFloorNormal
+            state.floorVelocity = bestFloorVel
         } else {
             state.isOnFloor = false
             state.floorNormal = SIMD3<Float>(0, 1, 0)
+            state.floorVelocity = .zero
         }
 
         state.position = nextPos

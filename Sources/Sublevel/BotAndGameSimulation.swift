@@ -1,15 +1,42 @@
 import Foundation
 import simd
 
+public enum BotChassis: Int, CaseIterable, Sendable {
+    case strikerBiped = 0      // Sleek reverse-jointed Mirror's Edge agile pursuit android
+    case heavyJuggernaut = 1   // Hulking broad-shouldered armored siege mech
+    case arachnidStrider = 2   // Quad-legged insectoid / spider skirmisher turret
+    case hoverSeraph = 3       // Levitating polyhedral sentinel with counter-rotating gyro halos
+
+    public var hitRadius: Float {
+        switch self {
+        case .strikerBiped:    return 0.52
+        case .heavyJuggernaut: return 0.72
+        case .arachnidStrider: return 0.68
+        case .hoverSeraph:     return 0.58
+        }
+    }
+
+    public var hitHeight: Float {
+        switch self {
+        case .strikerBiped:    return 1.88
+        case .heavyJuggernaut: return 2.18
+        case .arachnidStrider: return 1.48
+        case .hoverSeraph:     return 1.98
+        }
+    }
+}
+
 public struct ArenaBot: Sendable {
     public var id: Int
     public var name: String
+    public var chassis: BotChassis
     public var teamColor: SIMD3<Float>
     public var kinematic: KinematicState
     public var health: Float = 100.0
     public var armor: Float = 50.0
     public var weapon: WeaponSlot
     public var fireCooldown: Float = 0.0
+    public var fireKickTimer: Float = 0.0
     public var dodgeTimer: Float = 0.0
     public var strafePhase: Float = 0.0
     public var yaw: Float = 0.0
@@ -19,13 +46,24 @@ public struct ArenaBot: Sendable {
     public var respawnTimer: Float = 0.0
     public var hitFlashTimer: Float = 0.0
 
-    public init(id: Int, name: String, teamColor: SIMD3<Float>, position: SIMD3<Float>, weapon: WeaponSlot) {
+    public init(
+        id: Int,
+        name: String,
+        chassis: BotChassis = .strikerBiped,
+        teamColor: SIMD3<Float>,
+        position: SIMD3<Float>,
+        weapon: WeaponSlot
+    ) {
         self.id = id
         self.name = name
+        self.chassis = chassis
         self.teamColor = teamColor
         self.kinematic = KinematicState(position: position)
         self.weapon = weapon
         self.strafePhase = Float(id) * 1.57
+        if chassis == .heavyJuggernaut {
+            self.armor = 85.0
+        }
     }
 
     public var isAlive: Bool {
@@ -116,6 +154,7 @@ public final class SublevelSimulation {
     public var projectiles: [Projectile] = []
     public var beams: [BeamSegmentFX] = []
     public var shockSpheres: [ShockSphereFX] = []
+    public var debrisShards: [DebrisShard] = []
     public var styleFeed: [StyleFeedEntry] = []
     public var pendingSounds: [SoundEventKind] = []
 
@@ -154,29 +193,33 @@ public final class SublevelSimulation {
         bots = [
             ArenaBot(
                 id: 1,
-                name: "VEX // ALPHA",
+                name: "VEX // STRIKER",
+                chassis: .strikerBiped,
                 teamColor: SublevelPalette.acidMagenta,
                 position: SIMD3<Float>(0, 12.1, 21.0),
                 weapon: .prismRifle
             ),
             ArenaBot(
                 id: 2,
-                name: "KRON // BETA",
+                name: "KRON // TITAN",
+                chassis: .heavyJuggernaut,
                 teamColor: SublevelPalette.electricCyan,
                 position: SIMD3<Float>(-20.0, 0.1, -18.0),
                 weapon: .vectorLauncher
             ),
             ArenaBot(
                 id: 3,
-                name: "NYX // GAMMA",
-                teamColor: SublevelPalette.acidMagenta,
+                name: "NYX // STRIDER",
+                chassis: .arachnidStrider,
+                teamColor: SublevelPalette.amberOrange,
                 position: SIMD3<Float>(20.0, 0.1, 18.0),
                 weapon: .shardCannon
             ),
             ArenaBot(
                 id: 4,
-                name: "SOL // DELTA",
-                teamColor: SublevelPalette.electricCyan,
+                name: "SOL // SERAPH",
+                chassis: .hoverSeraph,
+                teamColor: SublevelPalette.cobaltViolet,
                 position: SIMD3<Float>(16.0, -10.8, -4.0),
                 weapon: .subRail
             )
@@ -197,6 +240,7 @@ public final class SublevelSimulation {
         projectiles.removeAll()
         beams.removeAll()
         shockSpheres.removeAll()
+        debrisShards.removeAll()
         styleFeed.removeAll()
         spawnInitialBots()
         pushFeed(title: "STRATA RESET // NEW MATCH", subtitle: "ALL SKYLIGHT & CONCOURSE BREACHES RESTORED", color: SublevelPalette.amberGold)
@@ -237,6 +281,9 @@ public final class SublevelSimulation {
         let dt = min(delta, 0.05)
         elapsedMatchTime += dt
         currentTick &+= 1
+
+        // 0. Step Dynamic Arena Structures (Elevators, Aerial Shuttles, Sump Pistons)
+        arena.updateDynamicStructures(time: elapsedMatchTime, dt: dt)
 
         // 1. Update Player Kinematics via MovementSolver
         var playerInput = input
@@ -338,7 +385,8 @@ public final class SublevelSimulation {
     private func checkInteractablesForPlayer(dt: Float) {
         // Jump Pads
         if elapsedMatchTime - lastJumpPadTriggerTime > 0.28 {
-            for pad in arena.jumpPads {
+            for idx in arena.jumpPads.indices {
+                let pad = arena.jumpPads[idx]
                 let horizDist = simd_distance(
                     SIMD2<Float>(playerKinematic.position.x, playerKinematic.position.z),
                     SIMD2<Float>(pad.position.x, pad.position.z)
@@ -350,6 +398,7 @@ public final class SublevelSimulation {
                     playerKinematic.velocity.y = pad.launchVelocity.y
                     playerKinematic.isOnFloor = false
                     playerKinematic.wallDodgesUsed = 0
+                    arena.jumpPads[idx].pulseTimer = 0.65
                     lastJumpPadTriggerTime = elapsedMatchTime
                     pendingSounds.append(.jumpPad)
                     boostFlow(0.20, reason: pad.label, color: SublevelPalette.signalRed)
@@ -744,7 +793,12 @@ public final class SublevelSimulation {
             CombatActorTarget(id: 0, feetPosition: playerKinematic.position, radius: config.hullRadius, height: config.hullHeight)
         ]
         for bot in bots where bot.isAlive {
-            list.append(CombatActorTarget(id: bot.id, feetPosition: bot.kinematic.position, radius: 0.55, height: 1.85))
+            list.append(CombatActorTarget(
+                id: bot.id,
+                feetPosition: bot.kinematic.position,
+                radius: bot.chassis.hitRadius,
+                height: bot.chassis.hitHeight
+            ))
         }
         return list
     }
@@ -1013,6 +1067,7 @@ public final class SublevelSimulation {
     private func updateBots(dt: Float) {
         for i in bots.indices {
             bots[i].hitFlashTimer = max(0.0, bots[i].hitFlashTimer - dt)
+            bots[i].fireKickTimer = max(0.0, bots[i].fireKickTimer - dt * 3.8)
 
             if !bots[i].isAlive {
                 bots[i].respawnTimer -= dt
@@ -1021,7 +1076,7 @@ public final class SublevelSimulation {
                     bots[i].kinematic = KinematicState(position: spawn.position)
                     bots[i].yaw = spawn.yaw
                     bots[i].health = 100.0
-                    bots[i].armor = 50.0
+                    bots[i].armor = bots[i].chassis == .heavyJuggernaut ? 85.0 : 50.0
                 }
                 continue
             }
@@ -1034,11 +1089,12 @@ public final class SublevelSimulation {
 
             bots[i].fireCooldown = max(0.0, bots[i].fireCooldown - dt)
             bots[i].dodgeTimer = max(0.0, bots[i].dodgeTimer - dt)
-            bots[i].strafePhase += dt * 2.4
+            bots[i].strafePhase += dt * (bots[i].chassis == .arachnidStrider ? 3.4 : 2.4)
 
             // Determine desired target point: if below player's stratum, steer toward nearest JumpPad!
             let botPos = bots[i].kinematic.position
-            let toPlayer = playerKinematic.eyePosition - (botPos + SIMD3<Float>(0, 1.5, 0))
+            let eyeH = bots[i].chassis.hitHeight * 0.8
+            let toPlayer = playerKinematic.eyePosition - (botPos + SIMD3<Float>(0, eyeH, 0))
             let distToPlayer = simd_length(toPlayer)
 
             var moveTarget = playerKinematic.position
@@ -1054,6 +1110,7 @@ public final class SublevelSimulation {
             let toMove = moveTarget - botPos
             let desiredYaw = atan2(-toMove.x, -toMove.z)
             bots[i].yaw = desiredYaw
+            bots[i].pitch = asin(simd_clamp(toPlayer.y / max(distToPlayer, 0.1), -0.85, 0.85))
 
             var botInput = MovementInput()
             botInput.yaw = desiredYaw
@@ -1076,7 +1133,8 @@ public final class SublevelSimulation {
             )
 
             // Bot Jump Pad interactions
-            for pad in arena.jumpPads {
+            for padIdx in arena.jumpPads.indices {
+                let pad = arena.jumpPads[padIdx]
                 let hDist = simd_distance(
                     SIMD2<Float>(bots[i].kinematic.position.x, bots[i].kinematic.position.z),
                     SIMD2<Float>(pad.position.x, pad.position.z)
@@ -1084,13 +1142,14 @@ public final class SublevelSimulation {
                 if hDist <= pad.radius && abs(bots[i].kinematic.position.y - pad.position.y) <= 1.5 {
                     bots[i].kinematic.velocity = pad.launchVelocity
                     bots[i].kinematic.isOnFloor = false
+                    arena.jumpPads[padIdx].pulseTimer = 0.55
                     break
                 }
             }
 
             // Bot Predictive Firing at Player
             if bots[i].fireCooldown <= 0.0 && distToPlayer < 46.0 {
-                let eye = bots[i].kinematic.position + SIMD3<Float>(0, 1.55, 0)
+                let eye = bots[i].kinematic.position + SIMD3<Float>(0, bots[i].chassis.hitHeight * 0.8, 0)
                 // Lead airborne targets using player's velocity
                 let leadTime = min(distToPlayer / 34.0, 0.55)
                 let predictedTarget = playerKinematic.eyePosition + playerKinematic.velocity * leadTime * 0.45
@@ -1100,6 +1159,7 @@ public final class SublevelSimulation {
 
                 if !los.hit || los.distance >= distToPlayer - 1.0 {
                     bots[i].fireCooldown = 1.65
+                    bots[i].fireKickTimer = 1.0
                     let spread = SIMD3<Float>(
                         sin(Float(currentTick) * 1.3 + Float(i)) * 0.045,
                         cos(Float(currentTick) * 1.7 + Float(i)) * 0.035,
@@ -1141,6 +1201,39 @@ public final class SublevelSimulation {
             flowMultiplier = min(5.0, flowMultiplier + dt * 0.08)
         }
 
+        // Spawn physical 3D tumbling debris shards for any newly shattered skylights / grates
+        if !arena.recentlyBreachedBoxes.isEmpty {
+            for box in arena.recentlyBreachedBoxes {
+                spawnBreachDebris(for: box)
+            }
+            arena.recentlyBreachedBoxes.removeAll()
+        }
+
+        // Step tumbling debris shards with gravity & floor bounces
+        var activeDebris: [DebrisShard] = []
+        activeDebris.reserveCapacity(debrisShards.count)
+        for var shard in debrisShards {
+            shard.lifetime -= dt
+            guard shard.lifetime > 0 && shard.position.y > arena.abyssLethalY - 6.0 else { continue }
+            shard.velocity.y -= 21.0 * dt
+            shard.position += shard.velocity * dt
+            shard.angles += shard.angularVelocity * dt
+            // Quick floor bounce check on B2 (-0.0) and B3 (-11.0) decks
+            if abs(shard.position.y - 0.15) < 0.25 && shard.velocity.y < -1.0 && abs(shard.position.x) > 8.0 {
+                shard.position.y = 0.15
+                shard.velocity.y = -shard.velocity.y * 0.42
+                shard.velocity.x *= 0.78
+                shard.velocity.z *= 0.78
+            } else if abs(shard.position.y - (-10.85)) < 0.25 && shard.velocity.y < -1.0 && abs(shard.position.x) < 7.0 && abs(shard.position.z) < 7.0 {
+                shard.position.y = -10.85
+                shard.velocity.y = -shard.velocity.y * 0.38
+                shard.velocity.x *= 0.72
+                shard.velocity.z *= 0.72
+            }
+            activeDebris.append(shard)
+        }
+        debrisShards = activeDebris
+
         beams = beams.compactMap { var b = $0; b.remainingLife -= dt; return b.remainingLife > 0 ? b : nil }
         shockSpheres = shockSpheres.compactMap { var s = $0; s.elapsed += dt; return s.elapsed < s.duration ? s : nil }
         styleFeed = styleFeed.compactMap { var f = $0; f.remainingTime -= dt; return f.remainingTime > 0 ? f : nil }
@@ -1151,6 +1244,38 @@ public final class SublevelSimulation {
             isZoomed: isSubRailZoomed,
             delta: dt
         )
+    }
+
+    private func spawnBreachDebris(for box: WorldBoxCollider) {
+        let isGlass = box.color.z > box.color.x
+        let nx = 6
+        let nz = 5
+        let size = box.size
+        let c = box.center
+        for ix in 0..<nx {
+            for iz in 0..<nz {
+                let fx = (Float(ix) + 0.5) / Float(nx) - 0.5
+                let fz = (Float(iz) + 0.5) / Float(nz) - 0.5
+                let hash = Float((ix * 73 + iz * 37) % 29) / 29.0
+                let pos = c + SIMD3<Float>(fx * size.x * 0.9, (hash - 0.5) * 0.2, fz * size.z * 0.9)
+                let radial = SIMD3<Float>(fx * 9.5 + (hash - 0.5) * 3.0, 2.5 - hash * 6.5, fz * 9.5 - (hash - 0.5) * 3.0)
+                let shardSize = SIMD3<Float>(
+                    (size.x / Float(nx)) * (0.45 + 0.35 * hash),
+                    max(0.08, size.y * 0.65),
+                    (size.z / Float(nz)) * (0.45 + 0.35 * (1.0 - hash))
+                )
+                debrisShards.append(DebrisShard(
+                    position: pos,
+                    velocity: radial,
+                    angles: SIMD3<Float>(fx * 2.0, hash * 3.1, fz * 2.0),
+                    angularVelocity: SIMD3<Float>(5.5 - hash * 11.0, 3.8 + fx * 6.0, -4.5 + fz * 9.0),
+                    size: shardSize,
+                    color: box.color,
+                    isGlass: isGlass,
+                    lifetime: 4.2 + hash * 1.6
+                ))
+            }
+        }
     }
 
     private func recordTickSnapshot() {

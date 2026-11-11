@@ -1,4 +1,6 @@
 import XCTest
+import AppKit
+import Metal
 import simd
 @testable import Sublevel
 
@@ -226,5 +228,91 @@ final class SublevelTests: XCTestCase {
         XCTAssertEqual(sim.currentTick, 30)
         XCTAssertEqual(sim.tickHistory.count, 30)
         XCTAssertEqual(sim.bots.count, 4)
+    }
+
+    func testDynamicArenaStructuresCarryPlayerAndMove() {
+        let sim = SublevelSimulation()
+        sim.botsEnabled = false
+        XCTAssertGreaterThanOrEqual(sim.arena.dynamicMovers.count, 6)
+        XCTAssertGreaterThanOrEqual(sim.arena.turbines.count, 6)
+
+        // Place player on the West Hydraulic Lift (-10.8, 0.025, 0) as it begins ascending toward B1
+        let liftMover = sim.arena.dynamicMovers.first(where: { $0.kind == .hydraulicLift && $0.phase == 0.0 })!
+        let initialLiftY = sim.arena.colliders[liftMover.colliderIndex].maxBounds.y
+        sim.playerKinematic = KinematicState(position: SIMD3<Float>(liftMover.startCenter.x, initialLiftY, liftMover.startCenter.z))
+
+        for _ in 0..<120 {
+            sim.update(
+                input: MovementInput(),
+                primaryFireHeld: false,
+                altFireHeld: false,
+                altFireJustReleased: false,
+                delta: 1.0 / 60.0
+            )
+        }
+
+        let movedLiftY = sim.arena.colliders[liftMover.colliderIndex].maxBounds.y
+        XCTAssertGreaterThan(movedLiftY, initialLiftY + 1.5, "Hydraulic lift collider should ascend dynamically")
+        XCTAssertGreaterThan(sim.playerKinematic.position.y, initialLiftY + 1.5, "Player riding hydraulic lift should be carried upward")
+    }
+
+    func testDistinctBotChassisShapesAndGeometry() {
+        let sim = SublevelSimulation()
+        let uniqueChassis = Set(sim.bots.map(\.chassis))
+        XCTAssertEqual(uniqueChassis.count, BotChassis.allCases.count, "All 4 bots should use distinct chassis shapes")
+
+        for bot in sim.bots {
+            var batch = ModelBatch()
+            CharacterModels.appendRobot(bot, time: 1.25, into: &batch)
+            let partCount = batch.cubes.count + batch.wedges.count + batch.cylinders.count
+                + batch.tubes.count + batch.tori.count + batch.cones.count
+                + batch.octahedra.count + batch.spheres.count
+            XCTAssertGreaterThan(partCount, 25, "Bot chassis \(bot.chassis) should generate detailed multi-primitive geometry")
+        }
+    }
+
+    func testDetailedWeaponsAndBreachDebrisGeneration() {
+        for slot in WeaponSlot.allCases {
+            var batch = ModelBatch()
+            CharacterModels.appendWeapon(
+                slot,
+                root: matrix_identity_float4x4,
+                into: &batch,
+                time: 0.5,
+                fireKick: 0.4,
+                rocketCharges: 3,
+                glowBoost: 0.5,
+                includeHands: true
+            )
+            let totalParts = batch.cubes.count + batch.wedges.count + batch.cylinders.count
+                + batch.tubes.count + batch.tori.count + batch.cones.count
+                + batch.octahedra.count + batch.spheres.count + batch.translucentCubes.count
+            XCTAssertGreaterThan(totalParts, 25, "Weapon \(slot) with Runner hands should have rich mechanical detail")
+        }
+
+        let sim = SublevelSimulation()
+        let breached = sim.arena.applyStructuralDamage(at: SIMD3<Float>(0, 11.65, -7.75), radius: 5.0, damage: 200.0)
+        XCTAssertEqual(breached, 1)
+        sim.update(input: MovementInput(), primaryFireHeld: false, altFireHeld: false, altFireJustReleased: false, delta: 1.0 / 60.0)
+        XCTAssertGreaterThanOrEqual(sim.debrisShards.count, 20, "Breaching a skylight must spawn physical tumbling 3D debris shards")
+    }
+
+    func testHighPolygonMirrorEdgeRendererPipeline() throws {
+        guard let device = MTLCreateSystemDefaultDevice() else {
+            throw XCTSkip("Metal device unavailable")
+        }
+        let sim = SublevelSimulation()
+        let audio = AudioSynthEngine()
+        audio.isMuted = true
+        let view = SublevelGameView(frame: NSRect(x: 0, y: 0, width: 320, height: 200), device: device)
+        guard let renderer = MetalArenaRenderer(mtkView: view, simulation: sim, audioEngine: audio) else {
+            XCTFail("Failed to initialize MetalArenaRenderer")
+            return
+        }
+
+        let png = renderer.renderSnapshotPNG(width: 320, height: 200)
+        XCTAssertNotNil(png)
+        XCTAssertGreaterThan(png?.count ?? 0, 1000)
+        XCTAssertGreaterThan(renderer.lastFrameTriangleCount, 500_000, "Scene polygon count should exceed 500K triangles")
     }
 }

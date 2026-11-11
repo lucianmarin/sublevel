@@ -1,5 +1,7 @@
 # Sublevel — Technical & Design Specification (Godot 4)
 
+![screenshot](screenshot.jpg)
+
 > **Concept:** A hyper-kinetic, textureless 3D arena shooter where **Mirror's Edge** architectural color-blocking meets the movement physics of **Quake III Arena** and the dual-mode weaponry & dodge mechanics of **Unreal Tournament '99**.
 > **The Pun ("Sublevel"):** Rather than traditional RPG "leveling up" via stat bloat, progression happens by descending through stark, brutalist underground architectural strata (*Sublevels*) and mastering spatial elevation, momentum, and verticality within each arena.
 
@@ -198,7 +200,12 @@ SublevelPlayer (CharacterBody3D)
 
 ## 9. Native macOS Build (Swift 6 + Metal)
 
-This repository implements the complete **Sublevel** specification natively for macOS using **Swift 6**, **Metal / MetalKit**, and **AVAudioEngine** procedural audio synthesis.
+This repository implements the complete **Sublevel** specification natively for macOS using **Swift 6**, **Metal / MetalKit**, and **AVAudioEngine** procedural audio synthesis:
+
+- **1.2M+ Polygon Procedural *Mirror's Edge* World:** SDF-beveled architectural slabs, true sloped launch wedges with hydraulic struts, space-frame roof trusses, *City of Glass* exterior skyscrapers & tower crane, color-coded HVAC ductwork, glass balustrades, cerulean sky-dome shadows, and 32-light saturated radiosity bounce.
+- **Dynamic Arena Structures:** Counter-phased B2↔B1 hydraulic elevators, mid-stratum monorail aerial shuttles, Sump abyss pistons, spinning extraction turbines, sun-tracking roof louvers, B3 gyroscopic reactor rings, and tumbling 3D shatter debris.
+- **Distinct Opponent Silhouettes:** Four unique bot chassis archetypes — **Striker Biped** (reverse-jointed pursuit android), **Heavy Juggernaut** (missile-pauldron siege mech), **Arachnid Strider** (quad-legged spider turret), and **Hover Seraph** (levitating sentinel with counter-rotating gyro halos).
+- **Detailed Firearms & Runner Hands:** Machined Picatinny rails, open holographic reflex sights, rotary 6-chamber flak drums, tri-warhead launcher clusters, 8-coil electromagnetic rail barrels, cycling bolts, and articulated Runner gloves.
 
 ### Build & Run
 ```bash

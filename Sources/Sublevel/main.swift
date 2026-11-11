@@ -174,7 +174,7 @@ if args.contains("--self-test-metal") {
     for _ in 0..<10 {
         renderer.draw(in: view)
     }
-    print("Metal shader pipeline and 10 simulation frames verified successfully on \(renderer.device.name).")
+    print("Metal shader pipeline verified on \(renderer.device.name): \(renderer.lastFrameTriangleCount) polygons across \(renderer.lastFrameInstanceCount) instances.")
     exit(0)
 }
 
